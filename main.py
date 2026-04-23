@@ -18,8 +18,7 @@ RENEW_URL = "https://weread.qq.com/web/login/renewal"
 FIX_SYNCKEY_URL = "https://weread.qq.com/web/book/chapterInfos"
 COOKIE_DATA_VARIANTS = [{"rq": "%2Fweb%2Fbook%2Fread", "ql": False},{"rq": "%2Fweb%2Fbook%2Fread", "ql": True},{"rq": "%2Fweb%2Fbook%2Fread"},]
 
-log.info(headers)
-log.info(cookies)
+
 
 def encode_data(data):
     """数据编码"""
@@ -42,10 +41,12 @@ def cal_hash(input_string):
 
 def get_wr_skey():
     """刷新cookie密钥"""
+    logging.info(headers)
+    logging.info(cookies)
     for cookie_data in COOKIE_DATA_VARIANTS:
         try:
             response = requests.post(RENEW_URL,headers=headers,cookies=cookies,data=json.dumps(cookie_data, separators=(',', ':')),timeout=10)
-            print(response.headers)
+            logging.info(response.headers)
         except requests.RequestException as exc:
             logging.info(f"refresh_cookie 请求失败，payload={cookie_data}，原因：{exc}")
             continue
