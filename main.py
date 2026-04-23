@@ -41,8 +41,6 @@ def cal_hash(input_string):
 
 def get_wr_skey():
     """刷新cookie密钥"""
-    logging.info(headers)
-    logging.info(cookies)
     for cookie_data in COOKIE_DATA_VARIANTS:
         try:
             response = requests.post(RENEW_URL,headers=headers,cookies=cookies,data=json.dumps(cookie_data, separators=(',', ':')),timeout=10)
@@ -55,7 +53,7 @@ def get_wr_skey():
             if "wr_skey" in cookie:
                 wr_skey = cookie.split('=')[-1][:8]
                 if wr_skey != "":
-                    return sr_skey
+                    return wr_skey
                 else:
                     return cookies.get('wr_skey', '')
 
