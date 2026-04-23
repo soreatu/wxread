@@ -1,120 +1,205 @@
 # main.py 主逻辑：包括字段拼接、模拟请求
-import json
-import time
-import random
-import logging
 import hashlib
-import requests
+import json
+import logging
+import random
+import time
 import urllib.parse
-from push import push
+from typing import Optional
+
+import requests
+
+from config import (
+    PUSH_METHOD,
+    READ_NUM,
+    book,
+    chapter,
+    cookies,
+    data,
+    headers,
+)
 from log_utils import setup_logging
-from config import data, headers, cookies, READ_NUM, PUSH_METHOD, book, chapter
+from push import push
 
 
-# 加密盐及其它默认值
+# ---- 常量 ----
 KEY = "3c5c8717f3daf09iop3423zafeqoi"
 READ_URL = "https://weread.qq.com/web/book/read"
 RENEW_URL = "https://weread.qq.com/web/login/renewal"
 FIX_SYNCKEY_URL = "https://weread.qq.com/web/book/chapterInfos"
-COOKIE_DATA_VARIANTS = [{"rq": "%2Fweb%2Fbook%2Fread", "ql": False},{"rq": "%2Fweb%2Fbook%2Fread", "ql": True},{"rq": "%2Fweb%2Fbook%2Fread"},]
+FIX_SYNCKEY_BOOK_ID = "3300060341"
+
+COOKIE_DATA_VARIANTS = [
+    {"rq": "%2Fweb%2Fbook%2Fread", "ql": False},
+    {"rq": "%2Fweb%2Fbook%2Fread", "ql": True},
+    {"rq": "%2Fweb%2Fbook%2Fread"},
+]
+
+READ_INTERVAL_MIN = 20                        # 每次阅读间隔随机范围（秒）
+READ_INTERVAL_MAX = 60
+MAX_TOTAL_RUNS = 200                          # 兜底上限，避免异常响应导致死循环
+REQUEST_TIMEOUT = 10
+RETRY_AFTER_NETWORK_ERROR = 5
+
+ERROR_MSG_NO_SKEY = "无法获取新密钥或者 WXREAD_CURL_BASH 配置有误，终止运行。"
 
 
+# ---- 基础工具 ----
+def _post_json(url: str, payload: dict, timeout: int = REQUEST_TIMEOUT) -> requests.Response:
+    """统一 POST，复用 config 里的 headers/cookies。"""
+    return requests.post(
+        url,
+        headers=headers,
+        cookies=cookies,
+        data=json.dumps(payload, separators=(",", ":")),
+        timeout=timeout,
+    )
 
-def encode_data(data):
-    """数据编码"""
-    return '&'.join(f"{k}={urllib.parse.quote(str(data[k]), safe='')}" for k in sorted(data.keys()))
+
+def encode_data(payload: dict) -> str:
+    """按 key 排序后 url-encode 拼接，用于后续哈希计算。"""
+    return "&".join(
+        f"{k}={urllib.parse.quote(str(payload[k]), safe='')}"
+        for k in sorted(payload.keys())
+    )
 
 
-def cal_hash(input_string):
-    """计算哈希值"""
-    _7032f5 = 0x15051505
-    _cc1055 = _7032f5
+def cal_hash(input_string: str) -> str:
+    """JS 端同款字符串哈希算法。"""
+    h1 = 0x15051505
+    h2 = h1
     length = len(input_string)
-    _19094e = length - 1
+    i = length - 1
 
-    while _19094e > 0:
-        _7032f5 = 0x7fffffff & (_7032f5 ^ ord(input_string[_19094e]) << (length - _19094e) % 30)
-        _cc1055 = 0x7fffffff & (_cc1055 ^ ord(input_string[_19094e - 1]) << _19094e % 30)
-        _19094e -= 2
+    while i > 0:
+        h1 = 0x7FFFFFFF & (h1 ^ ord(input_string[i]) << (length - i) % 30)
+        h2 = 0x7FFFFFFF & (h2 ^ ord(input_string[i - 1]) << i % 30)
+        i -= 2
 
-    return hex(_7032f5 + _cc1055)[2:].lower()
+    return hex(h1 + h2)[2:].lower()
 
-def get_wr_skey():
-    """刷新cookie密钥"""
-    for cookie_data in COOKIE_DATA_VARIANTS:
+
+def build_read_payload(last_time: int) -> int:
+    """就地更新 data 为本次阅读的签名请求体，返回本次时间戳。"""
+    this_time = int(time.time())
+    data.pop("s", None)  # 签名字段留到最后计算
+    data["b"] = random.choice(book)
+    data["c"] = random.choice(chapter)
+    data["ct"] = this_time
+    data["rt"] = this_time - last_time
+    data["ts"] = int(this_time * 1000) + random.randint(0, 1000)
+    data["rn"] = random.randint(0, 1000)
+    data["sg"] = hashlib.sha256(f"{data['ts']}{data['rn']}{KEY}".encode()).hexdigest()
+    data["s"] = cal_hash(encode_data(data))
+    return this_time
+
+
+# ---- Cookie 刷新 ----
+def get_wr_skey() -> Optional[str]:
+    """尝试各种 payload 变体调用 renewal 接口，拿到新的 wr_skey。"""
+    for variant in COOKIE_DATA_VARIANTS:
         try:
-            response = requests.post(RENEW_URL,headers=headers,cookies=cookies,data=json.dumps(cookie_data, separators=(',', ':')),timeout=10)
-            logging.info(response.headers)
+            response = _post_json(RENEW_URL, variant)
         except requests.RequestException as exc:
-            logging.info(f"refresh_cookie 请求失败，payload={cookie_data}，原因：{exc}")
+            logging.warning(f"renewal 请求失败，payload={variant}，原因：{exc}")
             continue
 
-        for cookie in response.headers.get('Set-Cookie', '').split(';'):
-            if "wr_skey" in cookie:
-                wr_skey = cookie.split('=')[-1][:8]
-                if wr_skey != "":
-                    return wr_skey
-                else:
-                    return cookies.get('wr_skey', '')
+        skey = response.cookies.get("wr_skey")
+        if skey:
+            return skey
+    return None
 
-def fix_no_synckey():
-    requests.post(FIX_SYNCKEY_URL, headers=headers, cookies=cookies,data=json.dumps({"bookIds":["3300060341"]}, separators=(',', ':')))
 
-refresh_print = setup_logging()
-
-def refresh_cookie():
+def refresh_cookie() -> None:
     logging.info("刷新 cookie")
     new_skey = get_wr_skey()
-    if new_skey:
-        cookies['wr_skey'] = new_skey
-        logging.info(f"密钥刷新成功，新密钥：{new_skey}")
-        logging.info("重新本次阅读。")
-    else:
-        ERROR_CODE = "无法获取新密钥或者 WXREAD_CURL_BASH 配置有误，终止运行。"
-        logging.error(ERROR_CODE)
-        push(ERROR_CODE, PUSH_METHOD)
-        raise Exception(ERROR_CODE)
+    if not new_skey:
+        logging.error(ERROR_MSG_NO_SKEY)
+        push(ERROR_MSG_NO_SKEY, PUSH_METHOD)
+        raise RuntimeError(ERROR_MSG_NO_SKEY)
+    cookies["wr_skey"] = new_skey
+    logging.info(f"密钥刷新成功，新密钥：{new_skey}")
 
-refresh_cookie()
-index = 1
-lastTime = int(time.time()) - 30
-logging.info(f"一共需要阅读 {READ_NUM} 次。")
 
-while index <= READ_NUM:
-    data.pop('s')
-    data['b'] = random.choice(book)
-    data['c'] = random.choice(chapter)
-    thisTime = int(time.time())
-    data['ct'] = thisTime
-    data['rt'] = thisTime - lastTime
-    data['ts'] = int(thisTime * 1000) + random.randint(0, 1000)
-    data['rn'] = random.randint(0, 1000)
-    data['sg'] = hashlib.sha256(f"{data['ts']}{data['rn']}{KEY}".encode()).hexdigest()
-    data['s'] = cal_hash(encode_data(data))
+def fix_no_synckey() -> None:
+    try:
+        _post_json(FIX_SYNCKEY_URL, {"bookIds": [FIX_SYNCKEY_BOOK_ID]})
+    except requests.RequestException as exc:
+        logging.warning(f"fix_no_synckey 请求失败：{exc}")
 
-    refresh_print(f"阅读进度: 第 {index}/{READ_NUM} 次，已完成 {(index - 1) * 0.5:.1f} 分钟")
-    logging.debug("data: %s", data)
-    response = requests.post(READ_URL, headers=headers, cookies=cookies, data=json.dumps(data, separators=(',', ':')))
-    resData = response.json()
-    logging.debug("response: %s", resData)
 
-    if 'succ' in resData:
-        if 'synckey' in resData:
-            lastTime = thisTime
-            index += 1
-            time.sleep(30)
-            refresh_print(f"阅读进度: 第 {min(index, READ_NUM + 1) - 1}/{READ_NUM} 次，已完成 {(index - 1) * 0.5:.1f} 分钟")
-        else:
+# ---- 主流程 ----
+refresh_print = setup_logging()
+
+
+def next_interval() -> int:
+    """每次阅读后的随机等待秒数。"""
+    return random.randint(READ_INTERVAL_MIN, READ_INTERVAL_MAX)
+
+
+def show_progress(done: int, elapsed_seconds: int) -> None:
+    refresh_print(
+        f"阅读进度: 第 {done}/{READ_NUM} 次，已完成 {elapsed_seconds / 60:.1f} 分钟"
+    )
+
+
+def main() -> None:
+    refresh_cookie()
+    logging.info(f"一共需要阅读 {READ_NUM} 次。")
+
+    done = 0
+    elapsed_seconds = 0
+    last_time = int(time.time()) - next_interval()
+    total_runs = 0
+
+    while done < READ_NUM and total_runs < MAX_TOTAL_RUNS:
+        total_runs += 1
+
+        this_time = build_read_payload(last_time)
+        logging.debug("data: %s", data)
+
+        try:
+            res_data = _post_json(READ_URL, data).json()
+        except (requests.RequestException, ValueError) as exc:
+            logging.warning(f"阅读请求失败，{RETRY_AFTER_NETWORK_ERROR}s 后重试：{exc}")
+            time.sleep(RETRY_AFTER_NETWORK_ERROR)
+            continue
+
+        logging.debug("response: %s", res_data)
+
+        if "succ" not in res_data:
+            logging.warning("cookie 已过期，尝试刷新...")
+            refresh_cookie()
+            continue
+
+        if "synckey" not in res_data:
             logging.warning("无 synckey，尝试修复...")
             fix_no_synckey()
+            continue
+
+        done += 1
+        last_time = this_time
+        interval = next_interval()
+        elapsed_seconds += interval
+        show_progress(done, elapsed_seconds)
+        time.sleep(interval)
+
+    if done < READ_NUM:
+        logging.warning(
+            f"达到兜底上限 {MAX_TOTAL_RUNS} 次仍未完成（{done}/{READ_NUM}），提前结束。"
+        )
     else:
-        logging.warning("cookie 已过期，尝试刷新...")
-        refresh_cookie()
+        logging.info("阅读脚本已完成。")
 
-logging.info("阅读脚本已完成。")
+    if PUSH_METHOD:
+        logging.info("开始推送...")
+        push(
+            f"微信读书自动阅读完成。\n阅读时长：{elapsed_seconds / 60:.1f} 分钟。",
+            PUSH_METHOD,
+        )
+    else:
+        logging.info("未配置推送渠道，跳过推送。")
 
-if PUSH_METHOD not in (None, ''):
-    logging.info("开始推送...")
-    push(f"微信读书自动阅读完成。\n阅读时长：{(index - 1) * 0.5} 分钟。", PUSH_METHOD)
-else:
-    logging.info("未配置推送渠道，跳过推送。")
+
+if __name__ == "__main__":
+    main()
