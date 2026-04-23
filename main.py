@@ -43,8 +43,9 @@ def get_wr_skey():
     for cookie_data in COOKIE_DATA_VARIANTS:
         try:
             response = requests.post(RENEW_URL,headers=headers,cookies=cookies,data=json.dumps(cookie_data, separators=(',', ':')),timeout=10)
+            print(response.headers)
         except requests.RequestException as exc:
-            logging.warning(f"refresh_cookie 请求失败，payload={cookie_data}，原因：{exc}")
+            logging.info(f"refresh_cookie 请求失败，payload={cookie_data}，原因：{exc}")
             continue
 
         for cookie in response.headers.get('Set-Cookie', '').split(';'):
