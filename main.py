@@ -54,7 +54,7 @@ def get_wr_skey():
         for cookie in response.headers.get('Set-Cookie', '').split(';'):
             if "wr_skey" in cookie:
                 return cookie.split('=')[-1][:8]
-    return None
+    return cookies.get('wr_skey', '')
 
 def fix_no_synckey():
     requests.post(FIX_SYNCKEY_URL, headers=headers, cookies=cookies,data=json.dumps({"bookIds":["3300060341"]}, separators=(',', ':')))
