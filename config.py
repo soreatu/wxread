@@ -22,15 +22,12 @@ WXPUSHER_SPT = "" or os.getenv("WXPUSHER_SPT")
 SERVERCHAN_SPT = "" or os.getenv("SERVERCHAN_SPT")
 
 
-# read接口的bash命令，本地部署时可对应替换headers、cookies
-curl_str = os.getenv('WXREAD_CURL_BASH')
-
-
 # 书籍
 book = [
-    "36d322f07186022636daa5e","6f932ec05dd9eb6f96f14b9","43f3229071984b9343f04a4","d7732ea0813ab7d58g0184b8",
-    "3d03298058a9443d052d409","4fc328a0729350754fc56d4","a743220058a92aa746632c0","140329d0716ce81f140468e",
-    "1d9321c0718ff5e11d9afe8","ff132750727dc0f6ff1f7b5","e8532a40719c4eb7e851cbe","9b13257072562b5c9b1c8d6"
+    "ec432430717c6b4bec47a9b",      # 罪与罚（果麦经典）
+    "c7e32ab0813ab7f12g01454e",     # 破局之战——中国科技堵点的青年突围
+    "ce032b305a9bc1ce0b0dd2a",      # 三体全集（全三册）
+    "d6332fd05b1dc2d63df8938",      # 无人生还（同名英剧原著）
 ]
 
 # 章节
@@ -76,8 +73,7 @@ def convert(curl_command):
     cookies = {}
     
     # 从 -H 'Cookie: xxx' 提取
-    cookie_header = next((v for k, v in headers_temp.items() 
-                         if k.lower() == 'cookie'), '')
+    cookie_header = next((v for k, v in headers_temp.items() if k.lower() == 'cookie'), '')
     
     # 从 -b 'xxx' 提取
     cookie_b = re.search(r"-b '([^']+)'", curl_command)
@@ -91,10 +87,9 @@ def convert(curl_command):
                 cookies[key.strip()] = value.strip()
     
     # 移除 headers 中的 Cookie/cookie
-    headers = {k: v for k, v in headers_temp.items() 
-              if k.lower() != 'cookie'}
+    headers = {k: v for k, v in headers_temp.items() if k.lower() != 'cookie'}
 
     return headers, cookies
 
 
-headers, cookies = convert(curl_str) if curl_str else (headers, cookies)
+headers, cookies = convert(os.getenv('WXREAD_CURL_BASH'))
