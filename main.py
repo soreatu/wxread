@@ -27,7 +27,7 @@ KEY = "3c5c8717f3daf09iop3423zafeqoi"
 READ_URL = "https://weread.qq.com/web/book/read"
 RENEW_URL = "https://weread.qq.com/web/login/renewal"
 FIX_SYNCKEY_URL = "https://weread.qq.com/web/book/chapterInfos"
-FIX_SYNCKEY_BOOK_ID = "3300060341"
+FIX_SYNCKEY_BOOK_ID = "695233"
 
 COOKIE_DATA_VARIANTS = [
     {"rq": "%2Fweb%2Fbook%2Fread", "ql": False},
@@ -35,9 +35,9 @@ COOKIE_DATA_VARIANTS = [
     {"rq": "%2Fweb%2Fbook%2Fread"},
 ]
 
-READ_INTERVAL_MIN = 20                        # 每次阅读间隔随机范围（秒）
-READ_INTERVAL_MAX = 60
-MAX_TOTAL_RUNS = 200                          # 兜底上限，避免异常响应导致死循环
+READ_INTERVAL_MIN = 30                          # 每次阅读间隔随机范围（秒）lower bound
+READ_INTERVAL_MAX = 90                          # 每次阅读间隔随机范围（秒）upper bound
+MAX_TOTAL_RUNS = READ_NUM + 30                  # 兜底上限，避免异常响应导致死循环
 REQUEST_TIMEOUT = 10
 RETRY_AFTER_NETWORK_ERROR = 5
 
