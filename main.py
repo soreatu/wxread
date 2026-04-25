@@ -100,6 +100,7 @@ def get_wr_skey() -> Optional[str]:
     for variant in COOKIE_DATA_VARIANTS:
         try:
             response = _post_json(RENEW_URL, variant)
+            logging.info(response.headers)
         except requests.RequestException as exc:
             logging.warning(f"renewal 请求失败，payload={variant}，原因：{exc}")
             continue
