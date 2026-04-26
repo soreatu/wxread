@@ -20,7 +20,7 @@ TELEGRAM_CHAT_ID = "" or os.getenv("TELEGRAM_CHAT_ID")
 WXPUSHER_SPT = "" or os.getenv("WXPUSHER_SPT")
 # SeverChan推送时需填
 SERVERCHAN_SPT = "" or os.getenv("SERVERCHAN_SPT")
-
+WXREAD_CURL_BASH = "" or os.getenv('WXREAD_CURL_BASH')
 
 # 书籍
 book = [
@@ -28,15 +28,9 @@ book = [
     "c7e32ab0813ab7f12g01454e",     # 破局之战——中国科技堵点的青年突围
     "ce032b305a9bc1ce0b0dd2a",      # 三体全集（全三册）
     "d6332fd05b1dc2d63df8938",      # 无人生还（同名英剧原著）
+    "1ba32a90813aba78cg012d23",     # 大理一年
 ]
 
-# 章节
-chapter = [
-    "ecc32f3013eccbc87e4b62e","a87322c014a87ff679a21ea","e4d32d5015e4da3b7fbb1fa","16732dc0161679091c5aeb1",
-    "8f132430178f14e45fce0f7","c9f326d018c9f0f895fb5e4","45c322601945c48cce2e120","d3d322001ad3d9446802347",
-    "65132ca01b6512bd43d90e3","c20321001cc20ad4d76f5ae","c51323901dc51ce410c121b","aab325601eaab3238922e53",
-    "9bf32f301f9bf31c7ff0a60","c7432af0210c74d97b01b1c","70e32fb021170efdf2eca12","6f4322302126f4922f45dec"
-]
 
 """
 建议保留区域|默认读三体，其它书籍自行测试时间是否增加
@@ -92,4 +86,4 @@ def convert(curl_command):
     return headers, cookies
 
 
-headers, cookies = convert(os.getenv('WXREAD_CURL_BASH'))
+headers, cookies = convert(WXREAD_CURL_BASH)
