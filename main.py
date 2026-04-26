@@ -47,9 +47,13 @@ ERROR_MSG_NO_SKEY = "无法获取新密钥或者 WXREAD_CURL_BASH 配置有误�
 # ---- 基础工具 ----
 def _post_json(url: str, payload: dict, timeout: int = REQUEST_TIMEOUT) -> requests.Response:
     """统一 POST，复用 config 里的 headers/cookies。"""
+    request_headers = dict(headers)
+    if not any(key.lower() == "content-type" for key in request_headers):
+        request_headers["Content-Type"] = "application/json;charset=UTF-8"
+
     return requests.post(
         url,
-        headers=headers,
+        headers=request_headers,
         cookies=cookies,
         data=json.dumps(payload, separators=(",", ":")),
         timeout=timeout,
@@ -213,25 +217,39 @@ def get_book_chapter_mapping(book_ids: list[str]) -> dict[str, list[str]]:
     remaining = set(raw_book_ids)
     mapping: dict[str, list[str]] = {}
 
-    for url in (PUBLIC_CHAPTER_INFOS_URL, FIX_SYNCKEY_URL):
-        if not remaining:
-            break
-
-        request_book_ids = [book_id for book_id in raw_book_ids if book_id in remaining]
-        payload = {
-            "bookIds": request_book_ids,
-            "synckeys": [0] * len(request_book_ids),
-            "teenmode": 0,
-        }
-
-        try:
-            response_data = _post_json(url, payload).json()
-        except (requests.RequestException, ValueError) as exc:
-            logging.warning(f"获取章节列表失败，url={url}，原因：{exc}")
+    for raw_book_id in raw_book_ids:
+        if raw_book_id not in remaining:
             continue
 
-        chapter_items_by_book = _chapter_items_from_response(response_data, request_book_ids)
-        for raw_book_id, chapter_items in chapter_items_by_book.items():
+        for url in (PUBLIC_CHAPTER_INFOS_URL, FIX_SYNCKEY_URL):
+            payload = {
+                "bookIds": [raw_book_id],
+                "synckeys": [0],
+                "teenmode": 0,
+            }
+
+            try:
+                response_data = _post_json(url, payload).json()
+            except (requests.RequestException, ValueError) as exc:
+                logging.warning(f"获取章节列表失败，url={url}，bookId={raw_book_id}，原因：{exc}")
+                continue
+
+            err_code = response_data.get("errCode")
+            if err_code is not None:
+                logging.warning(
+                    "获取章节列表失败，url=%s，bookId=%s，errCode=%s，errMsg=%s",
+                    url,
+                    raw_book_id,
+                    err_code,
+                    response_data.get("errMsg", ""),
+                )
+                continue
+
+            chapter_items_by_book = _chapter_items_from_response(response_data, [raw_book_id])
+            chapter_items = chapter_items_by_book.get(raw_book_id)
+            if not chapter_items:
+                continue
+
             encoded_book_id = encoded_book_by_raw.get(raw_book_id, encode_weread_id(raw_book_id))
             encoded_chapter_ids = []
             seen = set()
@@ -254,6 +272,7 @@ def get_book_chapter_mapping(book_ids: list[str]) -> dict[str, list[str]]:
             if encoded_chapter_ids:
                 mapping[encoded_book_id] = encoded_chapter_ids
                 remaining.discard(raw_book_id)
+                break
 
     if remaining:
         logging.warning("以下书籍未获取到章节列表：%s", ", ".join(sorted(remaining)))
@@ -284,8 +303,8 @@ def build_read_payload(last_time: int, book_chapter_mapping: dict[str, list[str]
 
 
 # ---- Cookie 刷新 ----
-def get_wr_skey() -> Optional[str]:
-    """尝试各种 payload 变体调用 renewal 接口，拿到新的 wr_skey。"""
+def get_renewed_cookies() -> Optional[dict[str, str]]:
+    """尝试各种 payload 变体调用 renewal 接口，拿到新的 wr_* cookie。"""
     for variant in COOKIE_DATA_VARIANTS:
         try:
             response = _post_json(RENEW_URL, variant)
@@ -294,21 +313,29 @@ def get_wr_skey() -> Optional[str]:
             logging.warning(f"renewal 请求失败，payload={variant}，原因：{exc}")
             continue
 
-        skey = response.cookies.get("wr_skey")
-        if skey:
-            return skey
+        renewed_cookies = response.cookies.get_dict()
+        if renewed_cookies.get("wr_skey"):
+            return renewed_cookies
     return None
+
+
+def get_wr_skey() -> Optional[str]:
+    """兼容旧调用：只返回 renewal 接口拿到的 wr_skey。"""
+    renewed_cookies = get_renewed_cookies()
+    if not renewed_cookies:
+        return None
+    return renewed_cookies["wr_skey"]
 
 
 def refresh_cookie() -> None:
     logging.info("刷新 cookie")
-    new_skey = get_wr_skey()
-    if not new_skey:
+    renewed_cookies = get_renewed_cookies()
+    if not renewed_cookies:
         logging.error(ERROR_MSG_NO_SKEY)
         push(ERROR_MSG_NO_SKEY, PUSH_METHOD)
         raise RuntimeError(ERROR_MSG_NO_SKEY)
-    cookies["wr_skey"] = new_skey
-    logging.info(f"密钥刷新成功，新密钥：{new_skey}")
+    cookies.update(renewed_cookies)
+    logging.info(f"密钥刷新成功，新密钥：{renewed_cookies['wr_skey']}")
 
 
 def fix_no_synckey() -> None:
