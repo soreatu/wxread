@@ -29,13 +29,14 @@ class PushNotification:
             "https": os.getenv("https_proxy"),
         }
 
-    def push_pushplus(self, content, token):
+    def push_pushplus(self, content, token, is_success):
         attempts = 5
+        title = f"微信阅读-{'成功' if is_success else '失败'}"
         for attempt in range(attempts):
             try:
                 response = requests.post(
                     self.pushplus_url,
-                    data=json.dumps({"token": token, "title": "微信阅读推送","content": content,}).encode("utf-8"),headers=self.headers,timeout=10,)
+                    data=json.dumps({"token": token, "title": title,"content": content,}).encode("utf-8"),headers=self.headers,timeout=10,)
                 response.raise_for_status()
                 logger.info("PushPlus 响应: %s", response.text)
                 return True
@@ -84,13 +85,11 @@ class PushNotification:
                     time.sleep(sleep_time)
         return False
 
-    def push_serverChan(self, content, spt):
+    def push_serverChan(self, content, spt, is_success):
         attempts = 5
         url = self.server_chan_url.format(spt)
 
-        title = "微信阅读推送"
-        if "自动阅读完成" not in content:
-            title = "微信阅读失败"
+        title = f"微信阅读-{'成功' if is_success else '失败'}"
 
         for attempt in range(attempts):
             try:
@@ -112,7 +111,7 @@ class PushNotification:
         return False
 
 
-def push(content, method):
+def push(content, method, is_success = True):
     notifier = PushNotification()
 
     if method in (None, ""):
@@ -122,13 +121,13 @@ def push(content, method):
     method = str(method).lower()
 
     if method == "pushplus":
-        return notifier.push_pushplus(content, PUSHPLUS_TOKEN)
+        return notifier.push_pushplus(content, PUSHPLUS_TOKEN, is_success)
     if method == "telegram":
         return notifier.push_telegram(content, TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID)
     if method == "wxpusher":
         return notifier.push_wxpusher(content, WXPUSHER_SPT)
     if method == "serverchan":
-        return notifier.push_serverChan(content, SERVERCHAN_SPT)
+        return notifier.push_serverChan(content, SERVERCHAN_SPT, is_success)
 
     logger.warning("无效的通知渠道 '%s'，已跳过推送。支持：pushplus、telegram、wxpusher、serverchan", method)
     return False

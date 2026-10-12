@@ -38,14 +38,17 @@ COOKIE_DATA_VARIANTS = [
 READ_INTERVAL_MIN = 20                          # 每次阅读间隔随机范围（秒）lower bound
 READ_INTERVAL_MAX = 40                          # 每次阅读间隔随机范围（秒）upper bound
 MAX_TOTAL_RUNS = READ_NUM + 30                  # 兜底上限，避免异常响应导致死循环
-REQUEST_TIMEOUT = 10
+REQUEST_TIMEOUT = (10, 30)
 RETRY_AFTER_NETWORK_ERROR = 5
+SYNCKEY_REPAIR_LIMIT = 3
+SYNCKEY_REPAIR_DELAY = 5
+AUTH_ERROR_CODES = {-2012, -2013}
 
 ERROR_MSG_NO_SKEY = "无法获取新密钥或者 WXREAD_CURL_BASH 配置有误，终止运行。"
 
 
 # ---- 基础工具 ----
-def _post_json(url: str, payload: dict, timeout: int = REQUEST_TIMEOUT) -> requests.Response:
+def _post_json(url: str, payload: dict, timeout: tuple[int, int] = REQUEST_TIMEOUT) -> requests.Response:
     """统一 POST，复用 config 里的 headers/cookies。"""
     request_headers = dict(headers)
     if not any(key.lower() == "content-type" for key in request_headers):
@@ -229,7 +232,9 @@ def get_book_chapter_mapping(book_ids: list[str]) -> dict[str, list[str]]:
             }
 
             try:
-                response_data = _post_json(url, payload).json()
+                response = _post_json(url, payload)
+                response.raise_for_status()
+                response_data = response.json()
             except (requests.RequestException, ValueError) as exc:
                 logging.warning(f"获取章节列表失败，url={url}，bookId={raw_book_id}，原因：{exc}")
                 continue
@@ -308,7 +313,7 @@ def get_renewed_cookies() -> Optional[dict[str, str]]:
     for variant in COOKIE_DATA_VARIANTS:
         try:
             response = _post_json(RENEW_URL, variant)
-            logging.info(response.headers)
+            response.raise_for_status()
         except requests.RequestException as exc:
             logging.warning(f"renewal 请求失败，payload={variant}，原因：{exc}")
             continue
@@ -327,22 +332,29 @@ def get_wr_skey() -> Optional[str]:
     return renewed_cookies["wr_skey"]
 
 
-def refresh_cookie() -> None:
+def fail_run(message: str) -> None:
+    """失败通知与非零退出保持一致，避免 Actions 将未完成的阅读标为成功。"""
+    logging.error(message)
+    push(message, PUSH_METHOD, is_success=False)
+    raise RuntimeError(message)
+
+
+def refresh_cookie(strict: bool = True) -> bool:
     logging.info("刷新 cookie")
     renewed_cookies = get_renewed_cookies()
     if not renewed_cookies:
-        logging.error(ERROR_MSG_NO_SKEY)
-        push(ERROR_MSG_NO_SKEY, PUSH_METHOD)
-        raise RuntimeError(ERROR_MSG_NO_SKEY)
+        if strict:
+            fail_run(ERROR_MSG_NO_SKEY)
+        logging.warning("启动时未获取到新密钥，保留现有 cookie 继续尝试阅读。")
+        return False
     cookies.update(renewed_cookies)
-    logging.info(f"密钥刷新成功，新密钥：{renewed_cookies['wr_skey']}")
+    logging.info("密钥刷新成功。")
+    return True
 
 
 def fix_no_synckey() -> None:
-    try:
-        _post_json(FIX_SYNCKEY_URL, {"bookIds": [FIX_SYNCKEY_BOOK_ID]})
-    except requests.RequestException as exc:
-        logging.warning(f"fix_no_synckey 请求失败：{exc}")
+    response = _post_json(FIX_SYNCKEY_URL, {"bookIds": [FIX_SYNCKEY_BOOK_ID]})
+    response.raise_for_status()
 
 
 # ---- 主流程 ----
@@ -361,14 +373,23 @@ def show_progress(done: int, elapsed_seconds: int) -> None:
 
 
 def main() -> None:
-    refresh_cookie()
-    book_chapter_mapping = get_book_chapter_mapping(book)
+    if READ_NUM <= 0:
+        fail_run("READ_NUM 必须是正整数。")
+    if not cookies:
+        fail_run("未解析到登录 cookie，请配置 WXREAD_CURL_BASH 为完整的 cURL (bash) 请求。")
+    # renewal 失败不代表已有阅读会话失效；启动时允许使用当前 Cookie。
+    refresh_cookie(strict=False)
+    try:
+        book_chapter_mapping = get_book_chapter_mapping(book)
+    except RuntimeError as exc:
+        fail_run(str(exc))
     logging.info(f"一共需要阅读 {READ_NUM} 次。")
 
     done = 0
     elapsed_seconds = 0
     last_time = int(time.time()) - next_interval()
     total_runs = 0
+    synckey_repair_attempts = 0
 
     while done < READ_NUM and total_runs < MAX_TOTAL_RUNS:
         total_runs += 1
@@ -377,24 +398,53 @@ def main() -> None:
         logging.debug("data: %s", data)
 
         try:
-            res_data = _post_json(READ_URL, data).json()
-        except (requests.RequestException, ValueError) as exc:
+            response = _post_json(READ_URL, data)
+        except requests.RequestException as exc:
             logging.warning(f"阅读请求失败，{RETRY_AFTER_NETWORK_ERROR}s 后重试：{exc}")
             time.sleep(RETRY_AFTER_NETWORK_ERROR)
             continue
 
+        try:
+            res_data = response.json()
+        except ValueError:
+            fail_run(f"read 接口返回非 JSON 响应，HTTP {response.status_code}。")
+        if not isinstance(res_data, dict):
+            fail_run(f"read 接口返回非对象 JSON 响应，HTTP {response.status_code}。")
+
         logging.debug("response: %s", res_data)
 
-        if res_data.get("succ") != 1:
-            logging.warning("cookie 已过期，尝试刷新...")
+        if not response.ok or res_data.get("succ") != 1:
+            err_code = res_data.get("errCode")
+            logging.warning(
+                "read 接口返回异常：HTTP %s，errCode=%s，errMsg=%s",
+                response.status_code,
+                err_code,
+                res_data.get("errMsg"),
+            )
+            if err_code in AUTH_ERROR_CODES:
+                logging.warning("检测到登录/鉴权异常，尝试刷新 cookie...")
+            else:
+                logging.warning("未识别为已知鉴权错误，尝试刷新 cookie 恢复...")
             refresh_cookie()
             continue
 
         if "synckey" not in res_data:
-            logging.warning("无 synckey，尝试修复...")
-            fix_no_synckey()
+            synckey_repair_attempts += 1
+            if synckey_repair_attempts > SYNCKEY_REPAIR_LIMIT:
+                fail_run(f"连续 {SYNCKEY_REPAIR_LIMIT} 次未恢复 synckey，终止运行。")
+            logging.warning(
+                "无 synckey，尝试修复（%d/%d）...",
+                synckey_repair_attempts,
+                SYNCKEY_REPAIR_LIMIT,
+            )
+            try:
+                fix_no_synckey()
+            except requests.RequestException as exc:
+                fail_run(f"synckey 修复请求失败：{exc}")
+            time.sleep(SYNCKEY_REPAIR_DELAY)
             continue
 
+        synckey_repair_attempts = 0
         done += 1
         last_time = this_time
         if done >= READ_NUM:
@@ -407,8 +457,8 @@ def main() -> None:
         time.sleep(interval)
 
     if done < READ_NUM:
-        logging.warning(
-            f"达到兜底上限 {MAX_TOTAL_RUNS} 次仍未完成（{done}/{READ_NUM}），提前结束。"
+        fail_run(
+            f"达到兜底上限 {MAX_TOTAL_RUNS} 次仍未完成（{done}/{READ_NUM}），终止运行。"
         )
     else:
         logging.info("阅读脚本已完成。")
@@ -418,6 +468,7 @@ def main() -> None:
         push(
             f"微信读书自动阅读完成。\n阅读时长：{elapsed_seconds / 60:.1f} 分钟。",
             PUSH_METHOD,
+            is_success=True,
         )
     else:
         logging.info("未配置推送渠道，跳过推送。")

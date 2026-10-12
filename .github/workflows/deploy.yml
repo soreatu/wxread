@@ -9,7 +9,7 @@ on:
     # 早间任务：北京时间每天 07:00
     # - cron: '0 7 * * *'
     #   timezone: 'Asia/Shanghai'
-    # 午间任务：北京时间每天 06:30
+    # 每日任务：北京时间每天 06:30
     - cron: '30 06 * * *'
       timezone: 'Asia/Shanghai'
     # 晚间任务：北京时间每天 20:00
@@ -30,10 +30,10 @@ jobs:
         echo "nameserver 8.8.4.4" | sudo tee -a /etc/resolv.conf
 
     - name: Checkout repository
-      uses: actions/checkout@v2
+      uses: actions/checkout@v7
 
     - name: Set up Python
-      uses: actions/setup-python@v2
+      uses: actions/setup-python@v7
       with:
         python-version: '3.10'
 

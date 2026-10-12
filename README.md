@@ -6,10 +6,12 @@
 
 该脚本具备以下功能：
 
-- **阅读时长调节**：默认计入排行榜和挑战赛，时长可调节，默认为60分钟。
+- **阅读时长调节**：通过 `READ_NUM` 调整阅读次数，默认 40 次，每次间隔随机 20–40 秒，约 20 分钟。
 - **定时运行推送**：可部署在GitHub Action/服务器上，支持每天定时运行并推送结果到微信。
 - **Cookie自动更新**：脚本能自动获取并更新Cookie，一次部署后面无需其它操作。
 - **轻量化设计**：本脚本实现了轻量化的编写，部署服务器/GIthub action后到点运行，无需额外硬件。
+
+本 fork 保留 `config.py` 中的个人书单，运行时按每本书获取对应章节。GitHub Actions 与 Docker 默认均为北京时间每天 **06:30** 运行一次；可在配置中调整定时和阅读次数。
 
 ***
 ## 操作步骤 🛠️
@@ -29,7 +31,9 @@
 ### 方法一： GitHub Action部署运行（GitHub运行）
 
 
-- Fork这个仓库，在仓库 **Settings** -> 左侧列表中的 **Secrets and variables** -> **Actions**，然后在右侧的 **Repository secrets** 中添加如下值：
+- Fork这个仓库后，先打开 fork 的 **Actions** 页面，启用 `wxread` workflow；公开仓库 fork 后，定时 workflow 默认不会自动启用。
+- 若页面提示 `Workflows are not currently being run on this fork due to the scale of GitHub Actions usage`，需使用仓库维护者账号在 Actions 页面重新启用；合并代码不会解除这项暂停。
+- 在仓库 **Settings** -> 左侧列表中的 **Secrets and variables** -> **Actions**，然后在右侧的 **Repository secrets** 中添加如下值：
   - `WXREAD_CURL_BASH`：上面抓read接口后转换为curl_bash的数据。
   - `PUSH_METHOD`：推送方法，4选1推送方式（pushplus、wxpusher、telegram、serverChan）。
   - `PUSHPLUS_TOKEN` or `WXPUSHER_SPT` or `TELEGRAM_BOT_TOKEN`&`TELEGRAM_CHAT_ID` or `SERVERCHAN_SPT`: 选择推送后填写对应token。
@@ -43,7 +47,7 @@
 | key                        | Value                               | 说明                                                         | 属性      |
 | ------------------------- | ---------------------------------- | ------------------------------------------------------------ | --------- |
 | `WXREAD_CURL_BASH`         | `read` 接口 `curl_bash`数据 | **必填**，必须提供有效指令                                   | secrets   |
-| `READ_NUM`                 | 阅读次数（每次 30 秒）              | **可选**，阅读时长，默认 20 分钟                           | variables |
+| `READ_NUM`                 | 阅读次数（间隔随机 20–40 秒）              | **可选**，默认 40 次，约 20 分钟                           | variables |
 | `PUSH_METHOD`              | `pushplus`/`wxpusher`/`telegram`/`serverchan`    | **可选**，推送方式，4选1，默认不推送                                       |    secrets     |
 | `PUSHPLUS_TOKEN`           | PushPlus 的 token                   | 当 `PUSH_METHOD=pushplus` 时必填，[获取地址](https://www.pushplus.plus/uc.html) | secrets   |
 | `WXPUSHER_SPT`             | WxPusher 的token                    | 当 `PUSH_METHOD=wxpusher` 时必填，[获取地址](https://wxpusher.zjiecode.com/docs/#/?id=获取spt) | secrets   |
@@ -59,23 +63,50 @@
 
 ### 方法二： 服务器运行（docker部署）
 
-- 在你的服务器上有Python运行环境即可，使用`cron`定义自动运行。
-- 或者通过docker运行，将抓到的bash命令在 [Convert](https://curlconverter.com/python/) 转化为Python字典格式，复制需要的headers与cookies即可（data不需要）。
+**步骤1：** 克隆本 fork，并创建本地配置文件
 
-steps1：克隆这个项目：`git clone https://github.com/findmover/wxread.git`<br>
-steps2：配置config.py里的headers、cookies、READ_NUM、PUSH_METHOD以及对应推送方式token<br>
-steps3：进入目录使用镜像构建容器：
-`docker rm -f wxread && docker build -t wxread . && docker run -d --name wxread -v $(pwd)/logs:/app/logs --restart always wxread`<br>
-steps4：测试：`docker exec -it wxread python /app/main.py`
+```bash
+git clone https://github.com/soreatu/wxread.git
+cd wxread
+cp .env.example .env
+```
+
+编辑 `.env`，将浏览器复制的完整 cURL 命令折成单行，填入 `WXREAD_CURL_BASH`，并按需填写 `READ_NUM` 和推送配置。`.env` 已加入 Git 忽略规则。个人书单在 `config.py` 的 `book` 中配置，无需维护静态章节列表。
+
+**步骤2：** 构建并启动容器
+
+```bash
+docker compose up -d --build
+```
+
+Compose 从当前仓库构建 `wxread:local`，使镜像包含个人书单、动态章节映射及随机阅读间隔。更新代码或修改 `config.py` 后，重新执行上面的命令以重建镜像。
+
+容器使用 APScheduler 调度，默认时区为 `Asia/Shanghai`，每天 06:30 执行。启动后会输出下一次执行时间。可在 `.env` 中调整 `CRON_SCHEDULE`：
+
+- `30 6 * * *`：每天 06:30（默认）。
+- `0 */6 * * *`：每 6 小时。
+- `30 8 * * *`：每天 08:30。
+
+**步骤3：** 查看日志或手动运行
+
+```bash
+# 查看日志
+docker compose logs -f
+
+# 按当前 READ_NUM 完整运行一次
+docker compose exec wxread python /app/main.py
+```
+
+Docker 构建工作流可将当前仓库的镜像发布到 GHCR；上述 Compose 部署始终使用本地源码构建。
 
 ***
 ## Attention 📢
 
-1. **签到次数调整**：只需签到完成挑战赛可以将`num`次数从120调整为2，每次`num`为30秒，200即100分钟。
+1. **签到次数调整**：通过 `READ_NUM` 调整阅读次数，每次间隔随机 20–40 秒，实际累计时长以日志和微信读书记录为准。
    
 2. **解决阅读时间问题**：对于issue中提出的“阅读时间没有增加”，“增加时间与刷的时间不对等”建议保留`config.py`中的【data】字段，默认阅读三体，其它书籍自行测试。
 
-3. **GitHub Action部署/本地部署**：主要配置config.py即可，Action部署使用环境变量，本地部署修改config.py里的阅读次数、headers、cookies即可。
+3. **GitHub Action部署/本地部署**：Actions 使用 Secrets 和 Variables；Docker 使用 `.env`。直接运行 Python 时，可设置相应环境变量，或在 `config.py` 中填写 `WXREAD_CURL_BASH`；书单也在 `config.py` 中配置。
 
 4. **推送**：pushplus推送偶尔出问题，猜测是GitHub action环境问题，增加重试机制。并增加wxpusher的极简推送方式。
 

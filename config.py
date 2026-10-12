@@ -20,7 +20,7 @@ TELEGRAM_CHAT_ID = "" or os.getenv("TELEGRAM_CHAT_ID")
 WXPUSHER_SPT = "" or os.getenv("WXPUSHER_SPT")
 # SeverChan推送时需填
 SERVERCHAN_SPT = "" or os.getenv("SERVERCHAN_SPT")
-WXREAD_CURL_BASH = "" or os.getenv('WXREAD_CURL_BASH')
+WXREAD_CURL_BASH = "" or os.getenv('WXREAD_CURL_BASH', '')
 
 # 书籍
 book = [
