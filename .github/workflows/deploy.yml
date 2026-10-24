@@ -16,6 +16,12 @@ on:
     # - cron: '0 20 * * *'
     #   timezone: 'Asia/Shanghai'
   workflow_dispatch:  # 手动触发
+    inputs:
+      read_num:
+        description: '本次阅读次数；填 1 可快速验证，留空使用仓库 READ_NUM'
+        required: false
+        type: string
+        default: ''
 
 jobs:
   deploy:
@@ -70,7 +76,7 @@ jobs:
         TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
         TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         SERVERCHAN_SPT:  ${{ secrets.SERVERCHAN_SPT }}
-        READ_NUM: ${{ vars.READ_NUM }}  # 使用 Repository Variables
+        READ_NUM: ${{ inputs.read_num || vars.READ_NUM }}
 
       run: |
         python main.py
