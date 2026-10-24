@@ -40,7 +40,26 @@ jobs:
     - name: Install dependencies
       run: |
         python -m pip install --upgrade pip
-        pip install certifi==2024.8.30 charset-normalizer==3.4.0 idna==3.10 requests==2.32.3 urllib3==2.2.3
+        pip install certifi==2024.8.30 charset-normalizer==3.4.0 cryptography==50.0.2 idna==3.10 requests==2.32.3 urllib3==2.2.3
+
+    - name: Configure encrypted cookie path
+      run: echo "WXREAD_COOKIE_FILE=$RUNNER_TEMP/wxread-auth/cookies.enc" >> "$GITHUB_ENV"
+
+    - name: Determine encrypted cookie cache key
+      id: auth_cache_key
+      env:
+        WXREAD_CURL_BASH: ${{ secrets.WXREAD_CURL_BASH }}
+      run: |
+        fingerprint=$(python cookie_store.py cache-key)
+        echo "fingerprint=$fingerprint" >> "$GITHUB_OUTPUT"
+
+    - name: Restore encrypted cookies
+      uses: actions/cache/restore@v4
+      with:
+        path: ${{ runner.temp }}/wxread-auth/cookies.enc
+        key: wxread-auth-v1-${{ steps.auth_cache_key.outputs.fingerprint }}-${{ github.run_id }}-${{ github.run_attempt }}
+        restore-keys: |
+          wxread-auth-v1-${{ steps.auth_cache_key.outputs.fingerprint }}-
 
     - name: Run deployment script
       env:
@@ -55,6 +74,21 @@ jobs:
 
       run: |
         python main.py
+
+    - name: Check for encrypted cookie state
+      id: auth_state
+      if: ${{ always() && steps.auth_cache_key.outcome == 'success' }}
+      run: |
+        if [ -s "$WXREAD_COOKIE_FILE" ]; then
+          echo 'exists=true' >> "$GITHUB_OUTPUT"
+        fi
+
+    - name: Save encrypted cookies
+      if: ${{ always() && steps.auth_state.outputs.exists == 'true' }}
+      uses: actions/cache/save@v4
+      with:
+        path: ${{ runner.temp }}/wxread-auth/cookies.enc
+        key: wxread-auth-v1-${{ steps.auth_cache_key.outputs.fingerprint }}-${{ github.run_id }}-${{ github.run_attempt }}
 
   keepalive-job:
     name: Keepalive Workflow

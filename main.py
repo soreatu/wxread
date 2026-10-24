@@ -12,11 +12,13 @@ import requests
 from config import (
     PUSH_METHOD,
     READ_NUM,
+    WXREAD_CURL_BASH,
     book,
     cookies,
     data,
     headers,
 )
+from cookie_store import load_cookie_state, save_cookie_state
 from log_utils import setup_logging
 from push import push
 
@@ -44,7 +46,10 @@ SYNCKEY_REPAIR_LIMIT = 3
 SYNCKEY_REPAIR_DELAY = 5
 AUTH_ERROR_CODES = {-2012, -2013}
 
-ERROR_MSG_NO_SKEY = "无法获取新密钥或者 WXREAD_CURL_BASH 配置有误，终止运行。"
+ERROR_MSG_NO_SKEY = (
+    "无法续期登录态。请重新登录微信读书，复制返回 succ=1 的 read 请求（cURL bash），"
+    "更新 WXREAD_CURL_BASH 后重跑；若 AutoRead 环境存在同名 Secret，请更新该项。"
+)
 
 
 # ---- 基础工具 ----
@@ -318,9 +323,34 @@ def get_renewed_cookies() -> Optional[dict[str, str]]:
             logging.warning(f"renewal 请求失败，payload={variant}，原因：{exc}")
             continue
 
-        renewed_cookies = response.cookies.get_dict()
+        renewed_cookies = {}
+        for item in [*response.history, response]:
+            renewed_cookies.update(item.cookies.get_dict())
         if renewed_cookies.get("wr_skey"):
             return renewed_cookies
+        # HTTP 200 can still be a login failure. Do not print bodies or Set-Cookie.
+        try:
+            result = response.json()
+        except ValueError:
+            logging.warning(
+                "renewal 未返回 wr_skey：HTTP %s，响应不是 JSON。", response.status_code
+            )
+            continue
+        if not isinstance(result, dict):
+            logging.warning(
+                "renewal 未返回 wr_skey：HTTP %s，JSON 不是对象。", response.status_code
+            )
+            continue
+        err_code = result.get("errCode")
+        succ = result.get("succ")
+        logging.warning(
+            "renewal 未返回 wr_skey：HTTP %s，errCode=%s，succ=%s。%s",
+            response.status_code,
+            err_code if isinstance(err_code, int) else "未知",
+            succ if isinstance(succ, (int, bool)) else "未知",
+            "服务端拒绝当前登录态，需要重新登录。"
+            if isinstance(err_code, int) and err_code in AUTH_ERROR_CODES else "",
+        )
     return None
 
 
@@ -348,6 +378,7 @@ def refresh_cookie(strict: bool = True) -> bool:
         logging.warning("启动时未获取到新密钥，保留现有 cookie 继续尝试阅读。")
         return False
     cookies.update(renewed_cookies)
+    save_cookie_state(WXREAD_CURL_BASH, cookies)
     logging.info("密钥刷新成功。")
     return True
 
@@ -377,6 +408,10 @@ def main() -> None:
         fail_run("READ_NUM 必须是正整数。")
     if not cookies:
         fail_run("未解析到登录 cookie，请配置 WXREAD_CURL_BASH 为完整的 cURL (bash) 请求。")
+    missing = [name for name in ("wr_skey", "wr_vid") if not cookies.get(name)]
+    if missing:
+        fail_run(f"登录 cookie 缺少 {', '.join(missing)}，请重新复制完整的 cURL (bash) 到 WXREAD_CURL_BASH。")
+    cookies.update(load_cookie_state(WXREAD_CURL_BASH))
     # renewal 失败不代表已有阅读会话失效；启动时允许使用当前 Cookie。
     refresh_cookie(strict=False)
     try:

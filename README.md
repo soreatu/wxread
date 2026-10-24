@@ -8,7 +8,7 @@
 
 - **阅读时长调节**：通过 `READ_NUM` 调整阅读次数，默认 40 次，每次间隔随机 20–40 秒，约 20 分钟。
 - **定时运行推送**：可部署在GitHub Action/服务器上，支持每天定时运行并推送结果到微信。
-- **Cookie自动更新**：脚本能自动获取并更新Cookie，一次部署后面无需其它操作。
+- **Cookie 自动更新**：登录仍可续期时，脚本会更新 Cookie；Actions 和 Docker 会保存加密后的更新结果，供下次运行使用。登录过期后仍需重新抓取。
 - **轻量化设计**：本脚本实现了轻量化的编写，部署服务器/GIthub action后到点运行，无需额外硬件。
 
 本 fork 保留 `config.py` 中的个人书单，运行时按每本书获取对应章节。GitHub Actions 与 Docker 默认均为北京时间每天 **06:30** 运行一次；可在配置中调整定时和阅读次数。
@@ -41,6 +41,10 @@
 - 在 **Variables** 部分，最下方添加变量：
   - `READ_NUM`：设定每次阅读的目标次数。
 
+`deploy` job 使用 `AutoRead` 环境。如果该环境和 Repository secrets 中都有同名的 `WXREAD_CURL_BASH`，运行时会优先使用环境中的值。登录过期时，重新在浏览器抓取返回 `succ: 1` 的 `read` 请求，并更新实际生效的 Secret；然后在 Actions 中手动运行 `wxread` 验证。只更新未生效的同名 Secret 无法恢复登录。
+
+Actions 每次运行会尝试续期，并通过加密缓存把更新后的 Cookie 交给下一次运行。缓存以当前 `WXREAD_CURL_BASH` 的指纹分组；更新该 Secret 后会启用新的缓存分组。缓存可能被清理，登录也可能失效，因此出现 `errCode=-2012`、`登录超时` 或无法续期时，仍需重新抓取并更新 Secret。缓存中不保存明文 Cookie。
+
 
 - 基本释义：
 
@@ -54,7 +58,7 @@
 | `TELEGRAM_BOT_TOKEN`  <br>`TELEGRAM_CHAT_ID`   <br>`http_proxy`/`https_proxy`（可选）| 群组id以及机器人token                 | 当 `PUSH_METHOD=telegram` 时必填，[配置文档](https://www.nodeseek.com/post-22475-1) | secrets   |
 | `SERVERCHAN_SPT`          | serverchan 的 SendKey               | 当 `PUSH_METHOD=serverchan` 时必填，[获取地址](https://sct.ftqq.com/sendkey) | secrets   |
 
-**重要：除了READ_NUM配置在varables，其它的都配置在secrets里面的；需要推送`PUSH_METHOD`是必填的。**
+`READ_NUM` 配置在 Variables；`WXREAD_CURL_BASH` 和启用推送时所需的配置放在 Secrets。无需推送时可以留空 `PUSH_METHOD`。
 
 ### 视频教程
 
@@ -79,7 +83,7 @@ cp .env.example .env
 docker compose up -d --build
 ```
 
-Compose 从当前仓库构建 `wxread:local`，使镜像包含个人书单、动态章节映射及随机阅读间隔。更新代码或修改 `config.py` 后，重新执行上面的命令以重建镜像。
+Compose 从当前仓库构建 `wxread:local`，使镜像包含个人书单、动态章节映射及随机阅读间隔。更新代码或修改 `config.py` 后，重新执行上面的命令以重建镜像。更新后的 Cookie 会加密保存在 `wxread-auth` 命名卷中；更换 `.env` 中的 `WXREAD_CURL_BASH` 后，旧的加密状态不会继续使用。
 
 容器使用 APScheduler 调度，默认时区为 `Asia/Shanghai`，每天 06:30 执行。启动后会输出下一次执行时间。可在 `.env` 中调整 `CRON_SCHEDULE`：
 
@@ -106,7 +110,7 @@ Docker 构建工作流可将当前仓库的镜像发布到 GHCR；上述 Compose
    
 2. **解决阅读时间问题**：对于issue中提出的“阅读时间没有增加”，“增加时间与刷的时间不对等”建议保留`config.py`中的【data】字段，默认阅读三体，其它书籍自行测试。
 
-3. **GitHub Action部署/本地部署**：Actions 使用 Secrets 和 Variables；Docker 使用 `.env`。直接运行 Python 时，可设置相应环境变量，或在 `config.py` 中填写 `WXREAD_CURL_BASH`；书单也在 `config.py` 中配置。
+3. **GitHub Action部署/本地部署**：Actions 使用 Secrets 和 Variables；Docker 使用 `.env`。直接运行 Python 时，可设置相应环境变量，或在 `config.py` 中填写 `WXREAD_CURL_BASH`；如需跨进程保留更新后的 Cookie，再设置 `WXREAD_COOKIE_FILE` 为可写的加密状态文件路径。书单也在 `config.py` 中配置。
 
 4. **推送**：pushplus推送偶尔出问题，猜测是GitHub action环境问题，增加重试机制。并增加wxpusher的极简推送方式。
 

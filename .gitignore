@@ -13,3 +13,7 @@ logs/
 .env
 .env.local
 .env.*.local
+
+# Encrypted login state
+.state/
+cookies.enc

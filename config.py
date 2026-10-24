@@ -1,6 +1,7 @@
 # config.py 自定义配置,包括阅读次数、推送token的填写
 import os
 import re
+import shlex
 
 """
 可修改区域
@@ -55,33 +56,56 @@ data = {
 
 
 def convert(curl_command):
-    """提取bash接口中的headers与cookies
-    支持 -H 'Cookie: xxx' 和 -b 'xxx' 两种方式的cookie提取
-    """
-    # 提取 headers
-    headers_temp = {}
-    for match in re.findall(r"-H '([^:]+): ([^']+)'", curl_command):
-        headers_temp[match[0]] = match[1]
+    """从浏览器复制的 cURL (bash) 中提取 headers 和 cookies。"""
+    # shlex 不执行命令；先合并 Bash 的反斜杠换行。
+    command = re.sub(r"\\\r?\n[ \t]*", " ", curl_command)
+    try:
+        args = shlex.split(command)
+    except ValueError:
+        # 不把可能含登录凭据的原命令放进异常或日志。
+        return {}, {}
 
-    # 提取 cookies
+    headers = {}
+    cookie_option = None
+    index = 0
+    while index < len(args):
+        arg = args[index]
+        option = None
+        value = None
+
+        if arg in ("-H", "--header", "-b", "--cookie"):
+            option = arg
+            if index + 1 < len(args):
+                index += 1
+                value = args[index]
+        elif arg.startswith("--header="):
+            option, value = "--header", arg[len("--header="):]
+        elif arg.startswith("--cookie="):
+            option, value = "--cookie", arg[len("--cookie="):]
+        elif arg.startswith("-H") and len(arg) > 2:
+            option, value = "-H", arg[2:]
+        elif arg.startswith("-b") and len(arg) > 2:
+            option, value = "-b", arg[2:]
+
+        if value is not None:
+            if option in ("-H", "--header") and ":" in value:
+                name, header_value = value.split(":", 1)
+                name = name.strip()
+                if name:
+                    headers[name] = header_value.strip()
+            elif option in ("-b", "--cookie"):
+                cookie_option = value
+        index += 1
+
+    cookie_header = next((value for name, value in headers.items() if name.lower() == "cookie"), "")
+    headers = {name: value for name, value in headers.items() if name.lower() != "cookie"}
     cookies = {}
-    
-    # 从 -H 'Cookie: xxx' 提取
-    cookie_header = next((v for k, v in headers_temp.items() if k.lower() == 'cookie'), '')
-    
-    # 从 -b 'xxx' 提取
-    cookie_b = re.search(r"-b '([^']+)'", curl_command)
-    cookie_string = cookie_b.group(1) if cookie_b else cookie_header
-    
-    # 解析 cookie 字符串
-    if cookie_string:
-        for cookie in cookie_string.split('; '):
-            if '=' in cookie:
-                key, value = cookie.split('=', 1)
-                cookies[key.strip()] = value.strip()
-    
-    # 移除 headers 中的 Cookie/cookie
-    headers = {k: v for k, v in headers_temp.items() if k.lower() != 'cookie'}
+    for pair in (cookie_option if cookie_option is not None else cookie_header).split(";"):
+        if "=" in pair:
+            name, value = pair.split("=", 1)
+            name = name.strip()
+            if name:
+                cookies[name] = value.strip()
 
     return headers, cookies
 

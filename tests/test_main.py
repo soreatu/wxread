@@ -2,8 +2,12 @@
 
 import importlib
 import json
+import os
 from pathlib import Path
 import runpy
+import subprocess
+import sys
+import tempfile
 import unittest
 from unittest.mock import Mock, patch
 
@@ -55,6 +59,10 @@ class MainRegressionTests(unittest.TestCase):
         self.start_patch("main.READ_NUM", 1)
         self.start_patch("main.MAX_TOTAL_RUNS", 6)
         self.start_patch("main.PUSH_METHOD", "telegram")
+        self.start_patch("main.WXREAD_CURL_BASH", "curl -b 'wr_skey=source-test-key; wr_vid=test-user'")
+        environment = patch.dict("os.environ", {"WXREAD_COOKIE_FILE": ""})
+        environment.start()
+        self.addCleanup(environment.stop)
         cookie_patch = patch.dict(main.cookies, {"wr_skey": "existing-test-key", "wr_vid": "test-user"}, clear=True)
         cookie_patch.start()
         self.addCleanup(cookie_patch.stop)
@@ -95,6 +103,60 @@ class MainRegressionTests(unittest.TestCase):
         self.assertEqual(len(reads), 1)
         self.push.assert_called_once()
         self.assertIsNot(self.push.call_args.kwargs.get("is_success"), False)
+
+    def test_rotated_login_survives_a_new_actions_process(self):
+        # Each interpreter starts with the original Secret. Only the encrypted file
+        # survives between jobs; the mock server rejects the obsolete refresh token.
+        script = '''
+import json
+import sys
+from unittest.mock import Mock, patch
+import requests
+with patch("log_utils.setup_logging", return_value=Mock()):
+    import main
+current_refresh = sys.argv[1]
+reads = []
+def post(url, **kwargs):
+    global current_refresh
+    result = requests.Response()
+    result.status_code = 200
+    payload = {"errCode": -2012, "errMsg": "登录超时"}
+    if kwargs["cookies"].get("wr_rt") == current_refresh:
+        if url == main.RENEW_URL:
+            current_refresh = "rotated-refresh"
+            payload = {"succ": 1}
+            result.cookies = requests.cookies.cookiejar_from_dict({
+                "wr_skey": "rotated-key", "wr_vid": "test-user", "wr_rt": current_refresh,
+            })
+        else:
+            assert url == main.READ_URL
+            reads.append(kwargs["cookies"].copy())
+            payload = {"succ": 1, "synckey": "new-sync"}
+    result._content = json.dumps(payload).encode()
+    return result
+with (
+    patch("requests.sessions.Session.request", side_effect=AssertionError("Unexpected network request")),
+    patch("requests.post", side_effect=post),
+    patch("main.get_book_chapter_mapping", return_value={"book": ["chapter"]}),
+):
+    main.main()
+assert len(reads) == 1
+assert reads[0]["wr_rt"] == "rotated-refresh"
+'''
+        with tempfile.TemporaryDirectory() as directory:
+            environment = {
+                **os.environ,
+                "WXREAD_COOKIE_FILE": str(Path(directory) / "cookies.enc"),
+                "WXREAD_CURL_BASH": "curl -b 'wr_skey=initial-key;wr_vid=test-user;wr_rt=initial-refresh'",
+                "READ_NUM": "1", "PUSH_METHOD": "",
+            }
+            for refresh in ("initial-refresh", "rotated-refresh"):
+                completed = subprocess.run(
+                    [sys.executable, "-c", script, refresh],
+                    cwd=Path(__file__).resolve().parents[1], env=environment,
+                    capture_output=True, text=True, timeout=10,
+                )
+                self.assertEqual(completed.returncode, 0, completed.stderr)
 
     def test_missing_synckey_stops_after_three_repairs_without_success(self):
         self.prepare_reading()
@@ -179,6 +241,46 @@ class MainRegressionTests(unittest.TestCase):
         self.assertIs(main.refresh_cookie(strict=False), False)
         self.assertEqual(main.cookies["wr_skey"], "existing-test-key")
         self.push.assert_not_called()
+
+    def test_renewal_login_rejection_has_diagnostic_without_secrets(self):
+        secret = "sensitive-server-response"
+        self.start_patch("requests.post", return_value=response({
+            "errCode": -2012, "errMsg": secret, "wr_rt": secret,
+        }))
+
+        with self.assertLogs(level="WARNING") as logs:
+            self.assertIsNone(main.get_renewed_cookies())
+
+        output = "\n".join(logs.output)
+        self.assertIn("HTTP 200", output)
+        self.assertIn("errCode=-2012", output)
+        self.assertIn("重新登录", output)
+        self.assertNotIn(secret, output)
+
+    def test_invalid_renewal_body_is_diagnosed_without_crashing(self):
+        for invalid in ([1], {"errCode": []}, None):
+            with self.subTest(invalid=invalid):
+                result = response(invalid) if invalid is not None else response(text="<html>secret</html>")
+                self.start_patch("requests.post", return_value=result)
+                with self.assertLogs(level="WARNING") as logs:
+                    self.assertIsNone(main.get_renewed_cookies())
+                self.assertIn("renewal 未返回 wr_skey", "\n".join(logs.output))
+
+    def test_expired_login_fails_with_recapture_instructions_without_success(self):
+        self.start_patch("main.get_book_chapter_mapping", return_value=self.mapping)
+        self.start_patch("requests.post", return_value=response({"errCode": -2012, "errMsg": "登录超时"}))
+
+        with self.assertRaisesRegex(RuntimeError, "更新 WXREAD_CURL_BASH"):
+            main.main()
+        self.assert_only_failure_notifications()
+
+    def test_partial_cookie_configuration_fails_before_network(self):
+        post = self.start_patch("requests.post")
+        with patch.dict(main.cookies, {"wr_skey": "test-key"}, clear=True):
+            with self.assertRaisesRegex(RuntimeError, "wr_vid"):
+                main.main()
+        post.assert_not_called()
+        self.assert_only_failure_notifications()
 
     def test_requests_have_separate_connect_and_read_timeouts(self):
         post = self.start_patch("requests.post", return_value=response())

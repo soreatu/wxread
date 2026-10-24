@@ -11,3 +11,9 @@ services:
       # 每次间隔随机 20–40 秒，默认 40 次约 20 分钟
       READ_NUM: "${READ_NUM:-40}"
       CRON_SCHEDULE: "${CRON_SCHEDULE:-30 6 * * *}"
+      WXREAD_COOKIE_FILE: /app/.state/cookies.enc
+    volumes:
+      - wxread-auth:/app/.state
+
+volumes:
+  wxread-auth:
