@@ -348,7 +348,7 @@ def get_renewed_cookies() -> Optional[dict[str, str]]:
             response.status_code,
             err_code if isinstance(err_code, int) else "未知",
             succ if isinstance(succ, (int, bool)) else "未知",
-            "服务端拒绝当前登录态，需要重新登录。"
+            "当前续期参数未通过鉴权，将继续尝试其他参数。"
             if isinstance(err_code, int) and err_code in AUTH_ERROR_CODES else "",
         )
     return None

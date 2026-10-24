@@ -254,7 +254,7 @@ assert reads[0]["wr_rt"] == "rotated-refresh"
         output = "\n".join(logs.output)
         self.assertIn("HTTP 200", output)
         self.assertIn("errCode=-2012", output)
-        self.assertIn("重新登录", output)
+        self.assertIn("继续尝试其他参数", output)
         self.assertNotIn(secret, output)
 
     def test_invalid_renewal_body_is_diagnosed_without_crashing(self):
